@@ -1,0 +1,348 @@
+Specific Development Plan for a yt Universal Frontend
+
+1. Main design choice
+
+Do not implement this as one giant catch-all yt frontend. Build it as an external yt extension package, and make the core of it a dispatcher plus adapter system. yt already supports many simulation formats through dedicated frontends, and externally installed packages can register Dataset subclasses through yt.frontends entry points and be discovered by load(). Also, yt’s own docs warn that _is_valid() is called for every Dataset subclass during yt.load, so it needs to stay very fast and very specific. A universal “accept almost anything” _is_valid() would fight the existing frontends and likely become slow and brittle.
+
+So the right architecture is:
+
+- first reuse existing yt frontends whenever possible
+- only fall back to universal parsing when yt cannot identify the data
+- expose a stable universal field layer on top, such as ("gas", "density") and ("all", "particle_mass")
+
+2. What to build
+
+Create a package like yt_universal with these layers:
+
+- loader.py
+  - public entry point: load_universal(path, **kwargs)
+- inspectors/
+  - fast dataset fingerprinting
+- adapters/
+  - one adapter per recognizable family
+- schema/
+  - canonical internal representation
+- builders/
+  - convert canonical representation into yt datasets
+- fields/
+  - alias native names to universal yt fields
+- tests/
+  - answer tests and unit tests
+
+The canonical internal representation should describe:
+
+- geometry: unigrid / AMR / particle / mixed / unstructured
+- file family: gadget-like HDF5 / generic HDF5 / ASCII table / binary block / directory-based snapshot
+- domain info: dimensions, bbox, refinement levels, periodicity
+- units: length, mass, time, velocity, magnetic
+- field map: native field name -> universal field name
+- particle map: native particle arrays -> yt particle fields
+- chunk readers: how to read data lazily or in blocks
+
+This matches yt’s frontend model, where a frontend has to provide data meaning, data localization, and data reading, while field definitions are handled separately in fields.py.
+
+3. Loading algorithm
+
+I would make the loader behave like this:
+
+def load_universal(path, **kwargs):
+    # 1) try normal yt first
+    try:
+        ds = yt.load(path, **kwargs)
+        return attach_universal_aliases(ds)
+    except Exception:
+        pass
+
+    # 2) inspect filesystem + file headers quickly
+    sig = inspect_path(path)
+
+    # 3) if inspection suggests a known yt frontend, retry with hint
+    if sig.yt_hint is not None:
+        try:
+            ds = yt.load(path, hint=sig.yt_hint, **kwargs)
+            return attach_universal_aliases(ds)
+        except Exception:
+            pass
+
+    # 4) choose universal adapter
+    adapter = registry.match(sig)
+
+    # 5) parse into canonical representation
+    ir = adapter.build_ir(path, **kwargs)
+
+    # 6) build yt dataset from generic loaders / custom dataset
+    ds = build_from_ir(ir)
+
+    # 7) add universal field aliases and derived fields
+    return attach_universal_aliases(ds)
+
+This uses yt’s existing automatic discovery first, and only uses the universal logic as fallback.
+
+4. Dataset inspection strategy
+
+The inspector should be cheap and deterministic. It should never read the full dataset on the first pass.
+
+For each path, gather:
+
+- is it a file or directory
+- file magic bytes
+- extension
+- presence of HDF5 signature
+- root groups / dataset names if HDF5
+- sibling files and naming patterns
+- small text-header samples for ASCII
+- file sizes and endian guesses for binary families
+
+The inspector should produce a DatasetSignature object with fields like:
+
+- container_type: hdf5, ascii, binary, directory
+- layout_type: unigrid, amr, particle_only, mixed
+- candidate_family: gadget_like, enzo_like, ramses_like, simple_hdf5, generic_ascii, etc.
+- confidence
+- needs_manifest
+
+This is where you compare against existing frontends first.
+
+5. HDF5 branch
+
+This should be the first development target, because it will cover the largest fraction of datasets with the least pain.
+
+5a. Known HDF5 families
+
+Add adapters for recognizable families such as:
+
+- gadget-like HDF5
+- gizmo-like HDF5
+- arepo/swift-like particle HDF5
+- AMReX/BoxLib-derived HDF5 where relevant
+- FLASH / GAMER / other existing yt-supported layouts
+- openPMD-like layouts if they are already covered by yt
+
+For these, the adapter mostly does pattern detection and then hands off to the existing yt frontend.
+
+5b. Simple generic HDF5
+
+For simple HDF5 files containing arrays with consistent structure, use yt’s generic HDF5 path rather than writing a heavy custom frontend.
+
+5c. Generic HDF5 -> stream fallback
+
+If the HDF5 file is not directly loadable but is still structurally understandable:
+
+- if it contains one 3D mesh level: translate to load_uniform_grid
+- if it contains multiple grid patches / AMR levels: translate to load_amr_grids
+- if it contains particle arrays: translate to load_particles
+- if it is unstructured / semistructured: translate to load_unstructured_mesh or load_hexahedral_mesh
+
+6. Non-HDF5 branch
+
+This branch should not try to “magically” decode every binary format. Instead, split it into three levels.
+
+6a. Structured ASCII
+
+Support these automatically:
+
+- columnar particle tables with headers
+- fixed-width mesh tables
+- block-structured ASCII with clear metadata markers
+
+Parse these into NumPy arrays, then use load_particles or load_uniform_grid.
+
+6b. Recognizable binary families
+
+For known binary formats, create small family-specific adapters:
+
+- detect header structure
+- infer endian and record size
+- map blocks to fields
+- expose chunk readers
+
+Do not try to build one universal binary parser. Use one adapter per family.
+
+6c. Manifest-assisted fallback
+
+For the truly exotic cases, require a small sidecar config such as yt_universal.yaml:
+
+format: binary_particle
+endianness: little
+dtype:
+  x: float32
+  y: float32
+  z: float32
+  mass: float32
+units:
+  length_unit: kpc
+  mass_unit: Msun
+field_map:
+  x: particle_position_x
+  y: particle_position_y
+  z: particle_position_z
+  mass: particle_mass
+bbox:
+  - [0, 1000]
+  - [0, 1000]
+  - [0, 1000]
+
+That keeps the system honest.
+
+7. Universal field contract
+
+This is the most important part for science usability.
+
+The universal layer should define a minimum guaranteed contract.
+
+For mesh / gas data, guarantee these when present or derivable:
+
+- ("gas", "density")
+- ("gas", "temperature")
+- ("gas", "pressure")
+- ("gas", "velocity_x")
+- ("gas", "velocity_y")
+- ("gas", "velocity_z")
+- ("gas", "metallicity")
+- ("gas", "specific_thermal_energy")
+- ("gas", "magnetic_field_x")
+- ("gas", "magnetic_field_y")
+- ("gas", "magnetic_field_z")
+
+For particles, guarantee:
+
+- ("all", "particle_position_x")
+- ("all", "particle_position_y")
+- ("all", "particle_position_z")
+- ("all", "particle_velocity_x")
+- ("all", "particle_velocity_y")
+- ("all", "particle_velocity_z")
+- ("all", "particle_mass")
+- ("all", "particle_index")
+- ("all", "particle_type")
+
+In yt, frontends normally do this by declaring known_other_fields and known_particle_fields, then aliasing native names to yt’s universal fields.
+
+8. Unit handling
+
+Make unit inference a first-class subsystem, not a side detail.
+
+Priority order:
+
+- explicit user override
+- native metadata in the dataset
+- family-specific defaults
+- manifest file
+- final fallback to code units with warnings
+
+The loader should never silently guess physical units if confidence is low. When uncertain, load in code units and emit a structured warning that says exactly which units are unresolved.
+
+9. Recommended class structure
+
+Do not start from one UniversalDataset. Start from these pieces:
+
+- UniversalInspector
+- AdapterRegistry
+- BaseAdapter
+- HDF5FamilyAdapter
+- SimpleHDF5Adapter
+- ASCIIGridAdapter
+- ASCIIParticleAdapter
+- BinaryFamilyAdapter
+- ManifestAdapter
+- FieldTranslator
+- UnitResolver
+- IRBuilder
+- StreamDatasetBuilder
+
+Then, only if needed, add a small number of actual Dataset subclasses:
+
+- UniversalStreamGridDataset
+- UniversalStreamParticleDataset
+- UniversalHybridDataset
+
+10. Development phases
+
+Phase 1: dispatcher and aliases
+
+- implement load_universal(path)
+- try yt.load(path) first
+- add alias attachment for already-supported datasets
+- success criterion: existing yt datasets automatically expose the preferred universal field names
+
+Phase 2: simple HDF5
+
+- add HDF5 inspection
+- support load_hdf5_file
+- support generic unigrid HDF5 via load_uniform_grid
+- success criterion: unknown HDF5 snapshots with regular 3D arrays load into yt and expose ("gas", "density")
+
+Phase 3: gadget-family HDF5 normalization
+
+- add gadget-like family detector
+- map PartType0, PartType1, header attrs, etc.
+- delegate to yt’s existing frontend whenever possible
+- add particle unions and field aliases
+- success criterion: gadget/gizmo-like datasets load through existing yt readers, then look uniform to the user
+
+Phase 4: AMR fallback
+
+- parse block metadata into canonical grid patches
+- feed into load_amr_grids
+- success criterion: unknown patch-based HDF5 or directory snapshots load as AMR stream datasets
+
+Phase 5: ASCII particle and grid support
+
+- structured headers
+- column-name mapping
+- manifest fallback
+- success criterion: common ASCII particle catalogs and mesh tables can be loaded with little or no manual work
+
+Phase 6: family-specific binary adapters
+
+- one adapter at a time, starting from the formats actually used
+- success criterion: each binary family gets a deterministic parser, not a heuristic-only parser
+
+Phase 7: hardening
+
+- lazy reads where possible
+- warnings and diagnostics
+- benchmark startup time and memory
+- ensure failure messages tell the user what to add to the manifest
+
+11. Testing strategy
+
+Treat testing as part of frontend development, not after it. Prepare a compact corpus of representative datasets:
+
+- one known gadget-like HDF5
+- one generic HDF5 mesh
+- one AMR-like unsupported layout
+- one ASCII particle file
+- one binary family you care about
+- one deliberately ambiguous or broken dataset
+
+For every case, test:
+
+- dataset classification
+- field list
+- unit correctness
+- ds.all_data()[("gas", "density")]
+- ds.all_data()[("all", "particle_mass")]
+- a projection or profile
+- a derived field that depends on the aliases
+
+12. What to avoid
+
+Avoid these three things:
+
+- a catch-all _is_valid() that claims everything
+- silent unit guesses
+- one parser that tries to decode arbitrary binary layouts without a manifest
+
+Those are the parts most likely to make the frontend hard to trust scientifically.
+
+13. Bottom line
+
+The best “universal frontend” for yt is really a universal loader layer:
+
+- reuse existing yt frontends first
+- inspect unsupported data into a canonical schema
+- convert that schema into yt generic loaders
+- enforce a universal alias layer so the user always sees fields like ("gas", "density") and ("all", "particle_mass")
+
+That approach matches how yt is designed: native frontend fields plus aliases and derived fields, external extension support, automatic dataset discovery, and generic loaders for unsupported formats.

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yt_universal"
+version = "0.1.0"
+description = "A universal loader layer for yt: dispatcher, adapters, and unified field aliases"
+requires-python = ">=3.10"
+dependencies = [
+    "yt>=4.1",
+    "numpy>=1.20",
+    "h5py>=3.0",
+]
+
+[project.entry-points."yt.frontends"]
+yt_universal = "yt_universal"
+
+[tool.setuptools.packages.find]
+include = ["yt_universal*"]
