@@ -21,7 +21,7 @@ from yt_universal.inspectors.base import inspect_path
 mylog = logging.getLogger(__name__)
 
 
-def load_universal(path, **kwargs):
+def load_universal(path, bypass_native=False, **kwargs):
     """Load a dataset through yt with universal field aliases.
 
     This is the main entry point for yt_universal. It tries yt's native
@@ -33,6 +33,11 @@ def load_universal(path, **kwargs):
     ----------
     path : str or path-like
         Path to the dataset file or directory.
+    bypass_native : bool, optional
+        If True, skip yt.load() entirely and force the universal
+        inspect → adapt → build pipeline. Useful for testing the
+        universal frontend on datasets that yt already supports.
+        Default: False.
     **kwargs
         Additional keyword arguments. Recognized keys:
         - hint : str — frontend hint for yt.load()
@@ -51,26 +56,33 @@ def load_universal(path, **kwargs):
     >>> ds = load_universal("snapshot_000.hdf5")
     >>> ad = ds.all_data()
     >>> ad["gas", "density"]  # works regardless of native field names
+
+    >>> # Force universal pipeline even if yt has a native frontend
+    >>> ds = load_universal("snapshot_000.hdf5", bypass_native=True)
     """
-    # Phase 1: try yt.load() with existing frontends
+    # Phase 1: try yt.load() with existing frontends (unless bypassed)
     hint = kwargs.pop("hint", None)
     yt_load_exc = None
-    try:
-        if hint is not None:
-            ds = yt.load(path, hint=hint, **kwargs)
-        else:
-            ds = yt.load(path, **kwargs)
-        mylog.info("yt_universal: loaded via yt frontend '%s'", type(ds).__name__)
-        return attach_universal_aliases(ds)
-    except Exception as exc:
-        yt_load_exc = exc
-        mylog.debug("yt_universal: yt.load() failed: %s", exc)
+
+    if not bypass_native:
+        try:
+            if hint is not None:
+                ds = yt.load(path, hint=hint, **kwargs)
+            else:
+                ds = yt.load(path, **kwargs)
+            mylog.info("yt_universal: loaded via yt frontend '%s'", type(ds).__name__)
+            return attach_universal_aliases(ds)
+        except Exception as exc:
+            yt_load_exc = exc
+            mylog.debug("yt_universal: yt.load() failed: %s", exc)
+    else:
+        mylog.info("yt_universal: bypass_native=True, skipping yt.load()")
 
     # Phase 2: inspect -> adapt -> build from IR
     sig = inspect_path(str(path))
 
     # If inspection suggests a known yt frontend, retry with hint
-    if sig.yt_hint is not None:
+    if sig.yt_hint is not None and not bypass_native:
         try:
             ds = yt.load(path, hint=sig.yt_hint, **kwargs)
             mylog.info(

@@ -139,10 +139,22 @@ def inspect_path(path: str) -> DatasetSignature:
         from yt_universal.inspectors.hdf5 import inspect_hdf5
 
         inspect_hdf5(path, sig)
-    elif sig.container_type == ContainerType.ASCII:
-        from yt_universal.inspectors.ascii import inspect_ascii
+    elif sig.container_type == ContainerType.DIRECTORY:
+        from yt_universal.inspectors.directory import inspect_directory
 
-        inspect_ascii(path, sig)
+        inspect_directory(path, sig)
+    elif sig.container_type == ContainerType.BINARY:
+        from yt_universal.inspectors.binary import inspect_binary
+
+        inspect_binary(path, sig)
+    elif sig.container_type == ContainerType.ASCII:
+        # Check for Enzo parameter file before generic ASCII inspection
+        if _check_enzo_param_file(sig):
+            pass  # Enzo detection populated the signature
+        else:
+            from yt_universal.inspectors.ascii import inspect_ascii
+
+            inspect_ascii(path, sig)
 
     mylog.info(
         "inspect_path: %s -> container=%s, layout=%s, family=%s (%.0f%% confidence)",
@@ -153,3 +165,16 @@ def inspect_path(path: str) -> DatasetSignature:
         sig.confidence * 100,
     )
     return sig
+
+
+def _check_enzo_param_file(sig: DatasetSignature) -> bool:
+    """Check if an ASCII file is an Enzo parameter file based on sibling files."""
+    has_hierarchy = any(f.endswith(".hierarchy") for f in sig.sibling_files)
+    has_cpu = any(".cpu" in f for f in sig.sibling_files)
+    if has_hierarchy and has_cpu:
+        sig.candidate_family = "enzo_file"
+        sig.layout_type = LayoutType.AMR
+        sig.confidence = 0.85
+        sig.yt_hint = "Enzo"
+        return True
+    return False

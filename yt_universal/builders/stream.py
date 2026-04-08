@@ -149,10 +149,7 @@ def _build_amr_grids(ir: DatasetIR):
         domain_dimensions = ir.domain_dimensions
     else:
         domain_dimensions = np.array([32, 32, 32])
-        warnings.warn(
-            "yt_universal: domain_dimensions not set for AMR data, defaulting to [32,32,32].",
-            stacklevel=3,
-        )
+        warn_no_units(ir.source_path)
 
     unit_kwargs = _build_unit_kwargs(ir)
     bbox = ir.bbox
