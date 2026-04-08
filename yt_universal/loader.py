@@ -92,7 +92,7 @@ def load_universal(path, **kwargs):
         # Extract unit/bbox kwargs for the adapter, pass the rest through
         adapter_kwargs = {}
         for key in ("length_unit", "mass_unit", "time_unit",
-                     "velocity_unit", "magnetic_unit", "bbox"):
+                     "velocity_unit", "magnetic_unit", "bbox", "grid_dims"):
             if key in kwargs:
                 adapter_kwargs[key] = kwargs.pop(key)
 
@@ -104,11 +104,9 @@ def load_universal(path, **kwargs):
         )
         return attach_universal_aliases(ds)
 
-    # No adapter matched — raise with context
+    # No adapter matched — raise with helpful context
+    from yt_universal.diagnostics import format_load_failure
+
     raise RuntimeError(
-        f"yt_universal: could not load '{path}'.\n"
-        f"  yt.load() failed: {yt_load_exc}\n"
-        f"  Inspection: container={sig.container_type.name}, "
-        f"layout={sig.layout_type.name}, family={sig.candidate_family}\n"
-        f"  No universal adapter matched this signature."
+        format_load_failure(str(path), yt_load_exc, sig)
     ) from yt_load_exc

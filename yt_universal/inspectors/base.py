@@ -139,6 +139,10 @@ def inspect_path(path: str) -> DatasetSignature:
         from yt_universal.inspectors.hdf5 import inspect_hdf5
 
         inspect_hdf5(path, sig)
+    elif sig.container_type == ContainerType.ASCII:
+        from yt_universal.inspectors.ascii import inspect_ascii
+
+        inspect_ascii(path, sig)
 
     mylog.info(
         "inspect_path: %s -> container=%s, layout=%s, family=%s (%.0f%% confidence)",

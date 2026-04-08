@@ -6,11 +6,10 @@ load_particles, or load_amr_grids.
 """
 
 import logging
-import warnings
-
 import numpy as np
 import yt
 
+from yt_universal.diagnostics import warn_no_units
 from yt_universal.schema.ir import DataKind, DatasetIR
 
 mylog = logging.getLogger(__name__)
@@ -80,12 +79,7 @@ def _build_uniform_grid(ir: DatasetIR):
 
     # If no units specified, warn the user
     if not unit_kwargs:
-        warnings.warn(
-            f"yt_universal: loading '{ir.source_path}' with no unit information. "
-            "Data will be in code units. Pass length_unit, mass_unit, etc. to "
-            "load_universal() for physical units.",
-            stacklevel=3,
-        )
+        warn_no_units(ir.source_path)
 
     ds = yt.load_uniform_grid(
         data,
@@ -116,11 +110,7 @@ def _build_particles(ir: DatasetIR):
         bbox = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
 
     if not unit_kwargs:
-        warnings.warn(
-            f"yt_universal: loading '{ir.source_path}' with no unit information. "
-            "Data will be in code units.",
-            stacklevel=3,
-        )
+        warn_no_units(ir.source_path)
 
     ds = yt.load_particles(
         data,
